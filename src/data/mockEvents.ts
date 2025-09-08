@@ -1,9 +1,7 @@
-import type { TimelineEvent } from "@/components/GroupedTimeline";
-
+import type { TimelineEvent } from "../hooks/useCrawl";
 export const mockEvents: TimelineEvent[] = [
   {
     id: "evt_1",
-    type: "job",
     title: "Senior Frontend Engineer",
     company: "Acme Corp",
     description:
@@ -15,7 +13,6 @@ export const mockEvents: TimelineEvent[] = [
   },
   {
     id: "evt_2",
-    type: "company",
     title: "BetaTech raises Series B",
     company: "BetaTech",
     description:
@@ -25,7 +22,6 @@ export const mockEvents: TimelineEvent[] = [
   },
   {
     id: "evt_3",
-    type: "interview",
     title: "System design: real-time chat",
     description:
       "Discuss WebSocket scaling, presence, fan-out, and backpressure.",
@@ -35,7 +31,6 @@ export const mockEvents: TimelineEvent[] = [
   },
   {
     id: "evt_4",
-    type: "job",
     title: "Backend Engineer (Go)",
     company: "Globex",
     location: "Berlin, DE",

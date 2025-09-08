@@ -1,13 +1,21 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Keep it simple: always proxy /api/* to backend in dev
   async rewrites() {
-    // If you set NEXT_PUBLIC_API_BASE, the frontend will call that directly.
-    // Otherwise, proxy /api/* to your Spring backend on 8082.
-    if (process.env.NEXT_PUBLIC_API_BASE) return [];
     return [
       {
         source: "/api/:path*",
         destination: "http://localhost:8082/api/:path*",
+      },
+    ];
+  },
+
+  // Add a header so we can confirm config is applied on any route
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [{ key: "X-Config-Loaded", value: "yes" }],
       },
     ];
   },
