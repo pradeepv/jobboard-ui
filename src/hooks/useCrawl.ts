@@ -68,7 +68,11 @@ export function useCrawl() {
     setRunning(false);
   }, [closeCurrentStream]);
 
-  useEffect(() => () => stop(), [stop]);
+  useEffect(() => {
+    return () => {
+      stop();
+    };
+  }, [stop]);
 
   const start = useCallback(
     async (query: string) => {

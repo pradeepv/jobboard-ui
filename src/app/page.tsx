@@ -4,10 +4,13 @@ import Nav from "@/components/Nav";
 import GroupedTimeline from "@/components/GroupedTimeline";
 import { useState } from "react";
 import { useCrawl } from "@/hooks/useCrawl";
+import { useAnalysis } from "@/hooks/useAnalysis";
 
 export default function Page() {
   const [query, setQuery] = useState("");
+  const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
   const { running, error, events, start, stop, requestId } = useCrawl();
+  const { analyzing, analysisResults, startAnalysis, analysisError } = useAnalysis();
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -72,12 +75,55 @@ export default function Page() {
           </div>
         )}
 
-        <GroupedTimeline items={events} />
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm text-gray-600">Results</h2>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">
+              Selected: {selectedJobs.size}
+            </span>
+            <button
+              className="rounded bg-emerald-600 px-3 py-1.5 text-white text-sm disabled:opacity-50"
+              disabled={selectedJobs.size === 0 || analyzing}
+              onClick={() => startAnalysis(Array.from(selectedJobs))}
+            >
+              {analyzing ? "Analyzing..." : "Generate Resume"}
+            </button>
+          </div>
+        </div>
+
+        <GroupedTimeline
+          items={events}
+          selectable
+          selectedIds={selectedJobs}
+          onToggle={(id: string) => {
+            setSelectedJobs((prev) => {
+              const next = new Set(prev);
+              if (next.has(id)) next.delete(id);
+              else next.add(id);
+              return next;
+            });
+          }}
+        />
 
         {!running && events.length === 0 && (
           <p className="text-gray-500">
             No results yet. Enter keywords and click Start to stream job events.
           </p>
+        )}
+
+        {analysisError && (
+          <div className="rounded border border-red-300 bg-red-50 p-3 text-red-700">
+            {analysisError}
+          </div>
+        )}
+
+        {analysisResults && (
+          <div className="mt-6 rounded border bg-white p-4">
+            <h3 className="font-semibold mb-2">Generated Artifacts</h3>
+            <pre className="whitespace-pre-wrap text-sm text-gray-800">
+{JSON.stringify(analysisResults, null, 2)}
+            </pre>
+          </div>
         )}
       </div>
     </main>
