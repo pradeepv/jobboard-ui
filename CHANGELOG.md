@@ -2,9 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.3.0] - 2025-09-17
 
-- Redesign of the timeline (vertical rail + grouped categories) is on hold. We will revisit to finalize layout, spacing, and LTR/RTL handling.
+### Added
+
+  - Analysis Modal
+    - Added a Job Summary panel at the top of the modal that displays job title, company, location, link to posting, and a description. The panel is populated from live analysis events with fallback to the selected item.
+    - Analysis Stream section is now collapsible. It auto-collapses when the analysis completes (upon receiving “done/complete” event), but can be manually expanded.
+    - Connection status chip shows Connected/Disconnected for the SSE stream.
+    - Improved log viewer with details expanders for event payloads and automatic scroll-to-latest.
+  - Networking
+    - EventSource now connects directly to the backend in dev with a cache-busting query param to avoid race conditions and buffering by the Next dev server.
+  - Accessibility/UX
+    - Clearer status and error messages in the modal.
+    - Buttons and controls styled consistently with brand color.
 
 ## [0.2.0] - 2025-08-28
 

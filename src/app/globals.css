@@ -1,8 +1,55 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* src/app/globals.css */
+@import "tailwindcss";
 
-/* your global styles */
+/* --- Phase 2: Custom globals (plain CSS first) --- */
 
-body { padding: 12px; }
+/* Example: CSS variables for brand/theme */
+:root {
+  --brand: #2563eb; /* Tailwind blue-600 */
+  --brand-contrast: #ffffff;
+}
 
+/* Example: Base typography adjustments */
+html, body {
+  height: 100%;
+}
+
+body {
+  color: #0f172a; /* slate-900 */
+  background-color: #ffffff;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Example: Link styles (keep it minimal) */
+a {
+  color: var(--brand);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* Example: Utility-like helpers (avoid @apply for now) */
+.container-narrow {
+  max-width: 72ch;
+  margin-inline: auto;
+  padding-inline: 1rem;
+}
+
+/* Optional: A small visual probe you can spot quickly */
+.probe {
+  outline: 2px dashed #94a3b8; /* slate-400 */
+}
+
+/* src/app/globals.css (append at bottom) */
+@layer utilities {
+  .btn-brand {
+    @apply px-4 py-2 rounded text-white hover:opacity-90;
+    background: var(--brand);
+  }
+}
+/* src/app/globals.css — temporary test at bottom */
+.bg-brand {
+  background-color: #2563eb !important;
+}

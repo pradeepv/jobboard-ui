@@ -1,19 +1,19 @@
+// src/app/layout.tsx
 import "./globals.css";
-import "../generated/tailwind.css";
+import Header from "@/components/Header";
 
 export const metadata = {
-  title: "TalentStream",
-  description: "Job board UI",
+  title: "App | Phase 4 - Header",
+  description: "Header introduced with Tailwind",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="bg-slate-50">
+        <Header />
+        {children}
+      </body>
     </html>
   );
 }

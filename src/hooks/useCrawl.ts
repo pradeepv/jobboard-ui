@@ -75,10 +75,14 @@ export function useCrawl() {
   }, [stop]);
 
   const start = useCallback(
-    async (query: string) => {
+    async (query: string, source: string) => {
       try {
         if (!query.trim()) {
           setError("Please enter a query.");
+          return;
+        }
+        if (!source.trim()) {
+          setError("Please select a source.");
           return;
         }
         if (startingRef.current) {
@@ -94,7 +98,7 @@ export function useCrawl() {
 
         // Build query params
         const params = new URLSearchParams();
-        params.set("sources", "ycombinator"); // adjust or expose in UI
+        params.set("sources", source); // single source string from UI
         params.set("keywords", query);
         params.set("location", "");
         params.set("remoteOnly", "false");
@@ -111,9 +115,7 @@ export function useCrawl() {
         if (!res.ok) {
           const text = await res.text().catch(() => "");
           startingRef.current = false;
-          throw new Error(
-            `POST /api/local/crawl failed: ${res.status} ${res.statusText} ${text}`,
-          );
+          throw new Error(`POST /api/local/crawl failed: ${res.status} ${res.statusText} ${text}`);
         }
 
         const data = await res.json();
@@ -143,30 +145,16 @@ export function useCrawl() {
           startingRef.current = false;
         });
 
-        // Optional: if backend emits a named 'connected' event
+        // Optional named events
         es.addEventListener("connected", () => {
-          // no-op
-        });
-
-        // Typed events (if backend sets event: ...)
-        es.addEventListener("start", (_ev: MessageEvent) => {
-          // no-op or show progress
-        });
-
-        es.addEventListener("source_start", (_ev: MessageEvent) => {
-          // no-op
-        });
-
-        es.addEventListener("page_start", (_ev: MessageEvent) => {
           // no-op
         });
 
         es.addEventListener("job", (ev: MessageEvent) => {
           try {
             const d = JSON.parse(ev.data);
-            // d: { type:"job", source, page, key, data:{...} }
             const payload = {
-              id: d.key, // stable id for dedupe
+              id: d.key, // stable id for dedupe if provided
               title: d.data?.title,
               company: d.data?.company,
               location: d.data?.location,
@@ -180,28 +168,13 @@ export function useCrawl() {
             if (payload.id) seenKeysRef.current.add(payload.id);
 
             const te = toTimelineEvent(payload);
-            setEvents((prev) =>
-              prev.some((p) => p.id === te.id) ? prev : [...prev, te],
-            );
+            setEvents((prev) => (prev.some((p) => p.id === te.id) ? prev : [...prev, te]));
           } catch (e) {
             console.error("Bad job event data", e, (ev as MessageEvent).data);
           }
         });
 
-        es.addEventListener("page_complete", (_ev: MessageEvent) => {
-          // no-op
-        });
-
-        es.addEventListener("source_complete", (_ev: MessageEvent) => {
-          // no-op
-        });
-
         es.addEventListener("complete", () => {
-          setRunning(false);
-          closeCurrentStream();
-        });
-
-        es.addEventListener("stopped", () => {
           setRunning(false);
           closeCurrentStream();
         });
@@ -217,14 +190,13 @@ export function useCrawl() {
           closeCurrentStream();
         });
 
-        // IMPORTANT: handle default 'message' when server doesn't set event: name
+        // Default message handler if server doesn't name events
         es.addEventListener("message", (ev: MessageEvent) => {
           try {
             const d = JSON.parse(ev.data);
             const t = d?.type;
 
-            if (t === "job") {
-              // Same mapping as the named 'job' handler
+            if (t === "job" || t === "page" || t === "item") {
               const payload = {
                 id: d.key ?? d.data?.id ?? d.url ?? d.link ?? undefined,
                 title: d.data?.title ?? d.title,
@@ -244,9 +216,7 @@ export function useCrawl() {
               if (payload.id) seenKeysRef.current.add(payload.id);
 
               const te = toTimelineEvent(payload);
-              setEvents((prev) =>
-                prev.some((p) => p.id === te.id) ? prev : [...prev, te],
-              );
+              setEvents((prev) => (prev.some((p) => p.id === te.id) ? prev : [...prev, te]));
               return;
             }
 
@@ -262,19 +232,12 @@ export function useCrawl() {
               closeCurrentStream();
               return;
             }
-
-            // Optional: ignore/observe banner/start/progress messages
-            // if (t === "banner" || t === "start" || t === "page_start" || t === "source_start") { /* no-op */ }
           } catch {
-            // Non-JSON lines like "type: connected" can be ignored safely
+            // ignore non-JSON lines
           }
         });
 
-        // Fallback logging channel if controller ever emits generic lines
-        es.addEventListener("line", () => {});
-
         es.onerror = () => {
-          // This also fires on normal close; don't treat as fatal if we already flipped running
           if (running) setError("SSE connection error.");
           setRunning(false);
           closeCurrentStream();

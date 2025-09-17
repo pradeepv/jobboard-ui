@@ -34,7 +34,7 @@ export function useAnalysis() {
           jobIds,
           userProfile: {
             name: "Demo User",
-            experience: "5 years",
+            experience: "5 years experience with React, TypeScript, Node.js, and Python",
             skills: ["React", "TypeScript", "Node.js", "Python"],
           },
         }),
@@ -45,13 +45,60 @@ export function useAnalysis() {
       }
 
       const result = await response.json();
-      setAnalysisResults(result);
+      
+      // Start SSE connection to get real-time updates
+      if (result.sseUrl) {
+        const eventSource = new EventSource(result.sseUrl);
+        
+        eventSource.addEventListener('analysis', (event: MessageEvent) => {
+          try {
+            const data = JSON.parse(event.data);
+            console.log('Analysis event:', data);
+            
+            if (data.kind === 'analysisComplete' && data.results) {
+              setAnalysisResults(data.results);
+              setAnalyzing(false);
+              eventSource.close();
+            } else if (data.kind === 'analysisError') {
+              setAnalysisError(data.error || 'Analysis failed');
+              setAnalyzing(false);
+              eventSource.close();
+            }
+            // Handle other progress events if needed
+          } catch (e) {
+            console.warn('Failed to parse analysis event:', e);
+          }
+        });
+        
+        eventSource.addEventListener('error', (event) => {
+          console.error('Analysis SSE error:', event);
+          setAnalysisError('Connection error during analysis');
+          setAnalyzing(false);
+          eventSource.close();
+        });
+        
+        // Cleanup after 5 minutes
+        setTimeout(() => {
+          if (eventSource.readyState === EventSource.OPEN) {
+            eventSource.close();
+            if (analyzing) {
+              setAnalysisError('Analysis timed out');
+              setAnalyzing(false);
+            }
+          }
+        }, 5 * 60 * 1000);
+        
+      } else {
+        // Fallback to direct result if no SSE URL
+        setAnalysisResults(result);
+        setAnalyzing(false);
+      }
+      
     } catch (error: any) {
       setAnalysisError(error?.message || String(error));
-    } finally {
       setAnalyzing(false);
     }
-  }, []);
+  }, [analyzing]);
 
   return {
     analyzing,

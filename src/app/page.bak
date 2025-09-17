@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useCrawl } from "../../hooks/useCrawl";
-import GroupedTimeline from "../../components/GroupedTimeline";
+import { useCrawl } from "../hooks/useCrawl";
+import GroupedTimeline from "../components/GroupedTimeline";
+import Modal from "../components/Modal";
 
 export default function TimelinePage() {
   const [query, setQuery] = useState("");
@@ -11,10 +12,33 @@ export default function TimelinePage() {
   const [analysisInfo, setAnalysisInfo] = useState<{ requestId: string; sseUrl: string } | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
+  // Modal state
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalJob, setModalJob] = useState<{
+    url: string;
+    title?: string;
+    company?: string;
+    location?: string;
+    id?: string;
+    description?: string;
+  } | null>(null);
+
   const esRef = useRef<EventSource | null>(null);
   const [connected, setConnected] = useState(false);
 
-  const handleAnalyze = async (url: string) => {
+  const handleAnalyze = async (url: string, item?: any) => {
+    console.log("[TimelinePage] handleAnalyze invoked", { url, hasItem: !!item });
+    setModalJob({
+      url,
+      title: item?.title,
+      company: item?.company,
+      location: item?.location,
+      id: item?.id,
+      description: item?.description,
+    });
+    console.log("[TimelinePage] opening modal now");
+    setModalOpen(true);
+
     setAnalysisError(null);
     setAnalysisInfo(null);
     setConnected(false);
@@ -22,9 +46,7 @@ export default function TimelinePage() {
       const res = await fetch("/api/analysis", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jobUrl: url,
-        }),
+        body: JSON.stringify({ jobUrl: url }),
       });
       if (!res.ok) {
         const t = await res.text();
@@ -46,7 +68,6 @@ export default function TimelinePage() {
       esRef.current = null;
     }
 
-    // sseUrl is already relative (/api/stream/{id}); Next rewrite proxies to Spring
     const es = new EventSource(analysisInfo.sseUrl);
     esRef.current = es;
 
@@ -59,8 +80,24 @@ export default function TimelinePage() {
       console.log("[Analysis SSE] connected", (e as MessageEvent).data);
     });
 
+    es.addEventListener("analysis", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data);
+        const kind = data?.kind || data?.type || "(no kind)";
+        console.log(`[Analysis SSE] analysis kind=${kind}`, data);
+      } catch {
+        console.log("[Analysis SSE] analysis (raw)", (e as MessageEvent).data);
+      }
+    });
+
+    es.addEventListener("done", (e) => {
+      console.log("[Analysis SSE] done", (e as MessageEvent).data);
+      setConnected(false);
+      try { es.close(); } catch {}
+      esRef.current = null;
+    });
+
     const names = [
-      "analysis",
       "parsingStart",
       "parsingComplete",
       "summarizingStart",
@@ -71,18 +108,14 @@ export default function TimelinePage() {
       "generatingComplete",
       "analysisSuccess",
       "analysisFailed",
-      // Generic fallback names your worker might emit:
-      "parseStart",
-      "parsed",
-      "done",
     ];
     for (const name of names) {
-      es.addEventListener(name, (e) => {
+      es.addEventListener(name, (evt) => {
         try {
-          const data = JSON.parse((e as MessageEvent).data);
+          const data = JSON.parse((evt as MessageEvent).data);
           console.log(`[Analysis SSE] ${name}`, data);
         } catch {
-          console.log(`[Analysis SSE] ${name}`, (e as MessageEvent).data);
+          console.log(`[Analysis SSE] ${name}`, (evt as MessageEvent).data);
         }
       });
     }
@@ -105,7 +138,7 @@ export default function TimelinePage() {
   }, []);
 
   return (
-    <div className="mx-auto max-w-3xl p-4 space-y-4">
+    <div className="relative z-0 mx-auto max-w-3xl p-4 space-y-4">
       <h1 className="text-2xl font-semibold">Crawl Timeline</h1>
 
       <div className="flex gap-2">
@@ -136,6 +169,9 @@ export default function TimelinePage() {
             Crawl Request: <code>{String(requestId).slice(0, 12)}</code>
           </div>
         )}
+
+        <div className="text-xs text-gray-500">modalOpen: {String(modalOpen)}</div>
+
         {analysisInfo && (
           <div className="space-y-1">
             <div className="text-green-700">
@@ -172,6 +208,61 @@ export default function TimelinePage() {
       {!running && events.length === 0 && (
         <p className="text-gray-500">No results yet. Start a crawl to see items here.</p>
       )}
+
+      <Modal
+        open={modalOpen}
+        onClose={() => {
+          setModalOpen(false);
+        }}
+        title="Analyze Job"
+        footer={
+          <div className="flex w-full items-center justify-between">
+            <div className="text-xs text-gray-500">
+              {modalJob?.url ? <span>URL: {modalJob.url}</span> : null}
+            </div>
+            <div className="flex gap-2">
+              <button
+                className="rounded border px-3 py-2 hover:bg-gray-50"
+                onClick={() => setModalOpen(false)}
+              >
+                Close
+              </button>
+              <button
+                className="rounded bg-blue-600 px-3 py-2 text-white hover:bg-blue-700"
+                onClick={() => {
+                  console.log("[Modal] Generate clicked for job:", modalJob);
+                }}
+              >
+                Generate
+              </button>
+            </div>
+          </div>
+        }
+      >
+        <div className="space-y-2">
+          <div className="text-sm text-gray-500">Job Details</div>
+          <div className="rounded border p-3">
+            <div className="font-medium">{modalJob?.title ?? "Untitled job"}</div>
+            <div className="text-sm text-gray-600">
+              {modalJob?.company ? modalJob.company : "Unknown company"}
+              {modalJob?.location ? ` · ${modalJob.location}` : ""}
+            </div>
+            {modalJob?.description ? (
+              <p className="mt-2 text-sm">{modalJob.description}</p>
+            ) : (
+              <p className="mt-2 text-sm text-gray-500">No description available.</p>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-sm text-gray-500">Analysis Stream</div>
+            <div className="h-40 overflow-auto rounded border bg-gray-50 p-2 text-xs text-gray-700">
+              <p>Waiting to connect...</p>
+              <p className="text-gray-500">In Step 4, SSE updates will appear here.</p>
+            </div>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
