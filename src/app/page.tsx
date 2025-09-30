@@ -248,22 +248,6 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-slate-50">
       <div className="mx-auto max-w-4xl p-6 space-y-6">
-        <div className="text-xs text-slate-500">
-          Probe: Tailwind alive —{" "}
-          <span className="inline-block h-3 w-3 align-middle rounded-full bg-emerald-500" />
-        </div>
-
-        <section className="p-6 rounded-lg bg-white shadow-sm space-y-5">
-          <h1 className="text-3xl font-stretch-200% underline">Phase 3: Config confirmed</h1>
-
-          <div className="inline-flex items-center gap-2">
-            <span className="px-3 py-1 rounded bg-brand text-white">bg-brand</span>
-            <button className="px-3 py-1 rounded bg-brand/80 text-white hover:bg-brand">
-              Button brand hover
-            </button>
-            <span className="px-3 py-1 rounded bg-blue-600 text-white">bg-blue-600</span>
-          </div>
-        </section>
 
         {/* Crawl form */}
         <section className="p-6 rounded-lg bg-white shadow-sm space-y-6">

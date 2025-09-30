@@ -20,10 +20,7 @@ export default function GroupedTimeline({
 
   return (
     <div>
-      {/* Visual marker to ensure we are editing the correct component */}
-      <div className="mb-2 text-xs text-gray-400">GT v2</div>
-
-      <ol className="relative border-s-2 border-blue-200 ps-4 space-y-6">
+      <ol className="relative space-y-6">
         {items.map((e) => {
           const isSelected = selectedIds.has(e.id);
           const hasUrl = typeof e.url === "string" && e.url.trim().length > 0;
@@ -31,7 +28,7 @@ export default function GroupedTimeline({
 
           return (
             <li key={e.id} className="ms-2">
-              <div className="absolute -start-1.5 mt-2 h-3 w-3 rounded-full border border-white bg-blue-500" />
+              <div className="absolute -start-1.5 mt-2 h-3" />
               <div
                 className={`rounded-md border p-3 shadow-sm ${
                   isSelected ? "bg-blue-50 border-blue-200" : "bg-white"
