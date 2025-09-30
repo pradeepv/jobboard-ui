@@ -61,7 +61,7 @@ export function useCrawl() {
     const id = currentIdRef.current;
     if (id) {
       try {
-        await fetch(`/api/local/crawl/${id}`, { method: "DELETE" });
+        await fetch(`/api/crawl/${id}`, { method: "DELETE" });
       } catch {}
     }
     closeCurrentStream();
@@ -106,7 +106,7 @@ export function useCrawl() {
         params.set("perSourceLimit", "50");
         params.set("json", "true");
 
-        const url = `/api/local/crawl?${params.toString()}`;
+        const url = `/api/crawl?${params.toString()}`;
         const res = await fetch(url, {
           method: "POST",
           headers: { Accept: "application/json" },
@@ -115,12 +115,12 @@ export function useCrawl() {
         if (!res.ok) {
           const text = await res.text().catch(() => "");
           startingRef.current = false;
-          throw new Error(`POST /api/local/crawl failed: ${res.status} ${res.statusText} ${text}`);
+          throw new Error(`POST /api/crawl failed: ${res.status} ${res.statusText} ${text}`);
         }
 
         const data = await res.json();
         const id: string = data.runId;
-        let ssePath: string = data.sseUrl || `/api/local/stream/${id}`;
+        let ssePath: string = data.sseUrl || `/api/stream/${id}`;
 
         // Close any existing stream BEFORE opening a new one
         closeCurrentStream();
@@ -150,35 +150,51 @@ export function useCrawl() {
           // no-op
         });
 
+        // Handle job events from MCP via the event bus
         es.addEventListener("job", (ev: MessageEvent) => {
           try {
-            const d = JSON.parse(ev.data);
-            const payload = {
-              id: d.key, // stable id for dedupe if provided
-              title: d.data?.title,
-              company: d.data?.company,
-              location: d.data?.location,
-              url: d.data?.url,
+            const eventData = JSON.parse(ev.data);
+            // Handle both formats: direct job data or wrapped in 'data' field
+            const jobData = eventData.data || eventData;
+            
+            const timelineEvent: TimelineEvent = {
+              id: jobData.id || jobData.url || generateId(),
+              title: jobData.title || jobData.role || jobData.msg || "Untitled",
+              company: jobData.company || jobData.org || jobData.employer || undefined,
+              location: jobData.location || undefined,
+              url: jobData.url || jobData.link || undefined,
               createdAt: new Date().toISOString(),
-              tags: Array.isArray(d.data?.tags) ? d.data.tags : [],
-              description: d.data?.description ?? "",
+              tags: Array.isArray(jobData.tags) ? jobData.tags : [],
+              description: jobData.description || jobData.summary || undefined,
             };
 
-            if (payload.id && seenKeysRef.current.has(payload.id)) return;
-            if (payload.id) seenKeysRef.current.add(payload.id);
+            // Prevent duplicate events
+            if (timelineEvent.id && seenKeysRef.current.has(timelineEvent.id)) {
+              return;
+            }
+            if (timelineEvent.id) {
+              seenKeysRef.current.add(timelineEvent.id);
+            }
 
-            const te = toTimelineEvent(payload);
-            setEvents((prev) => (prev.some((p) => p.id === te.id) ? prev : [...prev, te]));
+            setEvents(prev => [...prev, timelineEvent]);
           } catch (e) {
-            console.error("Bad job event data", e, (ev as MessageEvent).data);
+            console.error("Error processing job event", e, (ev as MessageEvent).data);
           }
         });
 
-        es.addEventListener("complete", () => {
+        // Handle completion events
+        es.addEventListener("complete", (ev: MessageEvent) => {
+          try {
+            const eventData = JSON.parse(ev.data);
+            console.log("Crawl completed with exit code:", eventData.exitCode);
+          } catch {
+            // If parsing fails, use default behavior
+          }
           setRunning(false);
           closeCurrentStream();
         });
 
+        // Handle error events
         es.addEventListener("error", (ev: MessageEvent) => {
           try {
             const e = JSON.parse(ev.data);
@@ -188,6 +204,17 @@ export function useCrawl() {
           }
           setRunning(false);
           closeCurrentStream();
+        });
+
+        // Handle parseError events
+        es.addEventListener("parseError", (ev: MessageEvent) => {
+          try {
+            const e = JSON.parse(ev.data);
+            console.warn("Parse error:", e);
+            // Don't stop the whole process for parse errors, just log
+          } catch {
+            console.warn("Parse error with unparsable data:", ev.data);
+          }
         });
 
         // Default message handler if server doesn't name events
@@ -253,4 +280,10 @@ export function useCrawl() {
   );
 
   return { requestId, running, error, events, start, stop };
+}
+
+// Helper function to generate IDs if not provided
+function generateId(): string {
+  return Math.random().toString(36).substring(2, 15) + 
+         Math.random().toString(36).substring(2, 15);
 }
