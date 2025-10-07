@@ -1,109 +1,155 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { parseErrorResponse } from "../utils/api";
+import { parseSseEvent } from "../utils/sse";
 
-export interface AnalysisResult {
-  resume: string;
-  coverLetter: string;
-  atsScore: number;
-  insights: string[];
+// Define the structure of the timeline events
+export interface AnalysisEvent {
+  kind: string;
+  stage: string;
+  message?: string;
+  timestamp: string;
+  [key: string]: any;
+}
+
+// Define the structure for parsed job details
+export interface JobDetails {
+  url: string;
+  title: string;
+  company: string;
+  location: string;
+  description: string;
+  salary?: string;
+  requirements?: string[];
+  techStack?: string[];
+}
+
+// Define the structure for AI analysis results
+export interface AiResults {
+  companyInfo?: string;
+  salaryRange?: string;
+  roleDescription?: string;
+  roleDuties?: string[];
+  requirements?: string[];
+  techStack?: string[];
+  leadershipRole?: boolean;
+  softSkills?: string[];
+  experienceLevel?: string;
 }
 
 export function useAnalysis() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [analysisResults, setAnalysisResults] = useState<AnalysisResult | null>(null);
+  const [events, setEvents] = useState<AnalysisEvent[]>([]);
+  const [jobDetails, setJobDetails] = useState<JobDetails | null>(null);
+  const [aiResults, setAiResults] = useState<AiResults | null>(null);
+  const [analysisCompleted, setAnalysisCompleted] = useState(false);
+  const sawCompleteRef = useRef(false);
 
-  const startAnalysis = useCallback(async (jobIds: string[]) => {
-    if (jobIds.length === 0) {
-      setAnalysisError("No jobs selected");
+  const startAnalysis = useCallback(async (jobUrl: string) => {
+    if (!jobUrl) {
+      setAnalysisError("No job URL provided");
       return;
     }
 
     try {
       setAnalyzing(true);
       setAnalysisError(null);
-      setAnalysisResults(null);
+      setEvents([]);
+      setJobDetails(null);
+      setAiResults(null);
+      setAnalysisCompleted(false);
 
-      const response = await fetch('/api/analysis', {
+      console.debug('[useAnalysis] POST /api/analysis/url', { jobUrl });
+      const response = await fetch('/api/analysis/url', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          jobIds,
-          userProfile: {
-            name: "Demo User",
-            experience: "5 years experience with React, TypeScript, Node.js, and Python",
-            skills: ["React", "TypeScript", "Node.js", "Python"],
-          },
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobUrl }),
       });
 
       if (!response.ok) {
-        throw new Error(`Analysis failed: ${response.status} ${response.statusText}`);
+        const env = await parseErrorResponse(response);
+        throw new Error(env ? `${env.code}: ${env.message}` : `Analysis failed: ${response.status}`);
       }
 
       const result = await response.json();
+      console.debug('[useAnalysis] analysis start result', result);
       
-      // Start SSE connection to get real-time updates
       if (result.sseUrl) {
-        const eventSource = new EventSource(result.sseUrl);
+        // In dev, proxies may drop SSE; log absolute URL consideration without changing behavior.
+        const sseUrl: string = result.sseUrl;
+        console.debug('[useAnalysis] opening SSE at', sseUrl);
+        const eventSource = new EventSource(sseUrl);
         
-        eventSource.addEventListener('analysis', (event: MessageEvent) => {
+        const handleEvent = (event: MessageEvent) => {
           try {
-            const data = JSON.parse(event.data);
-            console.log('Analysis event:', data);
-            
-            if (data.kind === 'analysisComplete' && data.results) {
-              setAnalysisResults(data.results);
+            const parsed = parseSseEvent<any>(event);
+            if (!parsed) return;
+            const outerType = parsed.type; // e.g., 'analysis'
+            const data = parsed.data;
+            const innerKind = data?.kind;  // e.g., 'parsingComplete', 'aiAnalysisComplete'
+            const effectiveKind = innerKind || outerType;
+            const evt: AnalysisEvent = { kind: effectiveKind, stage: data?.stage || effectiveKind, timestamp: parsed.timestamp, ...data };
+            setEvents(prevEvents => [...prevEvents, evt]);
+            console.debug('[useAnalysis] SSE event', { outerType, innerKind, effectiveKind, parsed });
+
+            if (effectiveKind === 'parsingComplete' && data?.jobDetails) {
+              setJobDetails(data.jobDetails);
+            } else if (effectiveKind === 'aiAnalysisComplete' && data?.aiResults) {
+              setAiResults(data.aiResults);
+            } else if (effectiveKind === 'analysisComplete') {
+              sawCompleteRef.current = true;
               setAnalyzing(false);
+              setAnalysisCompleted(true);
+              console.debug('[useAnalysis] analysisComplete, closing SSE');
               eventSource.close();
-            } else if (data.kind === 'analysisError') {
-              setAnalysisError(data.error || 'Analysis failed');
+            } else if (effectiveKind === 'error') {
+              setAnalysisError(data?.message || 'An unknown error occurred during analysis');
               setAnalyzing(false);
+              console.debug('[useAnalysis] analysis error event, closing SSE');
               eventSource.close();
             }
-            // Handle other progress events if needed
           } catch (e) {
             console.warn('Failed to parse analysis event:', e);
           }
+        };
+
+        eventSource.addEventListener('analysis', handleEvent);
+        eventSource.addEventListener('message', handleEvent);
+        eventSource.addEventListener('open', () => {
+          console.debug('[useAnalysis] SSE connection opened');
         });
         
         eventSource.addEventListener('error', (event) => {
           console.error('Analysis SSE error:', event);
-          setAnalysisError('Connection error during analysis');
+          if (!sawCompleteRef.current) {
+            setAnalysisError('Connection error during analysis');
+          } else {
+            console.debug('[useAnalysis] SSE closed after completion');
+          }
           setAnalyzing(false);
           eventSource.close();
         });
         
-        // Cleanup after 5 minutes
-        setTimeout(() => {
-          if (eventSource.readyState === EventSource.OPEN) {
-            eventSource.close();
-            if (analyzing) {
-              setAnalysisError('Analysis timed out');
-              setAnalyzing(false);
-            }
-          }
-        }, 5 * 60 * 1000);
-        
       } else {
-        // Fallback to direct result if no SSE URL
-        setAnalysisResults(result);
-        setAnalyzing(false);
+        throw new Error("SSE URL not provided in analysis response");
       }
       
     } catch (error: any) {
+      console.error('[useAnalysis] startAnalysis failed', error);
       setAnalysisError(error?.message || String(error));
       setAnalyzing(false);
     }
-  }, [analyzing]);
+  }, []);
 
   return {
     analyzing,
     analysisError,
-    analysisResults,
+    events,
+    jobDetails,
+    aiResults,
+    analysisCompleted,
     startAnalysis,
   };
 }
