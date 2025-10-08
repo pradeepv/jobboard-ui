@@ -11,6 +11,8 @@ export type TimelineEvent = {
   createdAt?: string;
   tags?: string[];
   description?: string;
+  _dataQuality?: 'complete' | 'partial' | 'minimal' | 'invalid'; // Data quality indicator
+  _source?: string; // Original source for debugging
 };
 
 type CrawlEvent =
@@ -21,20 +23,138 @@ type CrawlEvent =
   | { kind: "allComplete"; payload?: any }
   | { kind: "error"; payload?: any };
 
+function assessDataQuality(payload: any): 'complete' | 'partial' | 'minimal' | 'invalid' {
+  const criticalFields = ['title'];
+  const importantFields = ['company', 'url', 'source'];
+  const optionalFields = ['location', 'description', 'salary'];
+
+  const hasCritical = criticalFields.every(field => payload?.[field]);
+  const hasImportant = importantFields.some(field => payload?.[field]);
+  const hasOptional = optionalFields.some(field => payload?.[field]);
+
+  if (hasCritical && hasImportant && hasOptional) return 'complete';
+  if (hasCritical && hasImportant) return 'partial';
+  if (hasCritical) return 'minimal';
+  return 'invalid';
+}
+
+function generateSafeId(payload: any): string {
+  // Try URL-based ID first
+  if (payload?.url) {
+    return `job_${Math.abs(payload.url.split('').reduce((a: number, b: string) => a + b.charCodeAt(0), 0))}`;
+  }
+
+  // Fall back to title+company combination
+  if (payload?.title && payload?.company) {
+    const combined = `${payload.title}|${payload.company}`;
+    return `job_${Math.abs(combined.split('').reduce((a: number, b: string) => a + b.charCodeAt(0), 0))}`;
+  }
+
+  // Last resort: random ID
+  return (globalThis as any)?.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+}
+
+function sanitizeTitle(title: any): string {
+  if (!title || typeof title !== 'string') return "Job Posting";
+
+  // Remove common prefixes/suffixes
+  let cleaned = title.replace(/^(job|position|role):\s*/i, '');
+  cleaned = cleaned.replace(/\s+(job|position|role)$/i, '');
+
+  // Capitalize properly
+  cleaned = cleaned.split(/\s+/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+
+  return cleaned.trim() || "Job Posting";
+}
+
+function extractBestCompany(payload: any): string | undefined {
+  const companyFields = ['company', 'organization', 'org', 'employer'];
+
+  for (const field of companyFields) {
+    if (payload?.[field] && typeof payload[field] === 'string' && payload[field].trim()) {
+      return payload[field].trim();
+    }
+  }
+
+  // Extract from URL as fallback
+  if (payload?.url) {
+    try {
+      const domain = new URL(payload.url).hostname.replace('www.', '');
+      const parts = domain.split('.');
+      if (parts.length >= 2) {
+        return parts[parts.length - 2].charAt(0).toUpperCase() + parts[parts.length - 2].slice(1);
+      }
+      return domain.charAt(0).toUpperCase() + domain.slice(1);
+    } catch {
+      // Ignore URL parsing errors
+    }
+  }
+
+  return undefined;
+}
+
+function extractBestTimestamp(payload: any): string {
+  const timestampFields = ['posted_at', 'createdAt', 'date', 'timestamp', 'ts'];
+
+  for (const field of timestampFields) {
+    if (payload?.[field]) {
+      try {
+        const date = new Date(payload[field]);
+        if (!isNaN(date.getTime())) {
+          return date.toISOString();
+        }
+      } catch {
+        // Continue to next field
+      }
+    }
+  }
+
+  return new Date().toISOString();
+}
+
+function truncateSafely(text: any): string | undefined {
+  if (!text || typeof text !== 'string') return undefined;
+
+  const maxLength = 200;
+  if (text.length <= maxLength) return text;
+
+  return text.substring(0, maxLength - 3) + "...";
+}
+
+function sanitizeUrl(url: any): string | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+
+  try {
+    new URL(url);
+    return url;
+  } catch {
+    // Invalid URL
+    return undefined;
+  }
+}
+
 function toTimelineEvent(payload: any): TimelineEvent {
-  const fallbackId =
-    (globalThis as any)?.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+  const dataQuality = assessDataQuality(payload);
+  const safeId = generateSafeId(payload);
+
   return {
-    id: String(payload?.id ?? fallbackId),
-    title: payload?.title ?? payload?.role ?? payload?.msg ?? "Untitled",
-    company: payload?.company ?? payload?.org ?? payload?.employer ?? undefined,
-    location: payload?.location ?? undefined,
-    url: payload?.url ?? payload?.link ?? undefined,
-    createdAt: payload?.createdAt ?? payload?.ts ?? new Date().toISOString(),
-    tags: payload?.tags ?? [],
-    description: payload?.description ?? payload?.summary ?? undefined,
+    id: safeId,
+    title: sanitizeTitle(payload?.title),
+    company: extractBestCompany(payload),
+    location: payload?.location || undefined,
+    url: sanitizeUrl(payload?.url),
+    createdAt: extractBestTimestamp(payload),
+    tags: Array.isArray(payload?.tags) ? payload.tags : [],
+    description: truncateSafely(payload?.description ?? payload?.summary),
+    _dataQuality: dataQuality, // New field for UI components
+    _source: payload?.source || 'Unknown'
   };
 }
+
+import { parseErrorResponse } from "../utils/api";
+import { parseSseEvent } from "../utils/sse";
 
 export function useCrawl() {
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -113,9 +233,9 @@ export function useCrawl() {
         });
 
         if (!res.ok) {
-          const text = await res.text().catch(() => "");
+          const env = await parseErrorResponse(res);
           startingRef.current = false;
-          throw new Error(`POST /api/crawl failed: ${res.status} ${res.statusText} ${text}`);
+          throw new Error(env ? `${env.code}: ${env.message}` : `POST /api/crawl failed: ${res.status} ${res.statusText}`);
         }
 
         const data = await res.json();
@@ -153,20 +273,12 @@ export function useCrawl() {
         // Handle job events from MCP via the event bus
         es.addEventListener("job", (ev: MessageEvent) => {
           try {
-            const eventData = JSON.parse(ev.data);
-            // Handle both formats: direct job data or wrapped in 'data' field
-            const jobData = eventData.data || eventData;
-            
-            const timelineEvent: TimelineEvent = {
-              id: jobData.id || jobData.url || generateId(),
-              title: jobData.title || jobData.role || jobData.msg || "Untitled",
-              company: jobData.company || jobData.org || jobData.employer || undefined,
-              location: jobData.location || undefined,
-              url: jobData.url || jobData.link || undefined,
-              createdAt: new Date().toISOString(),
-              tags: Array.isArray(jobData.tags) ? jobData.tags : [],
-              description: jobData.description || jobData.summary || undefined,
-            };
+            const parsed = parseSseEvent<{ job: any }>(ev);
+            if (!parsed || parsed.type !== 'job') return;
+            const jobData = parsed.data?.job ?? parsed.data;
+
+            // Use the robust toTimelineEvent function for data sanitization
+            const timelineEvent = toTimelineEvent(jobData);
 
             // Prevent duplicate events
             if (timelineEvent.id && seenKeysRef.current.has(timelineEvent.id)) {
@@ -185,8 +297,10 @@ export function useCrawl() {
         // Handle completion events
         es.addEventListener("complete", (ev: MessageEvent) => {
           try {
-            const eventData = JSON.parse(ev.data);
-            console.log("Crawl completed with exit code:", eventData.exitCode);
+            const parsed = parseSseEvent<any>(ev);
+            if (parsed) {
+              console.log("Crawl completed:", parsed);
+            }
           } catch {
             // If parsing fails, use default behavior
           }
@@ -194,11 +308,23 @@ export function useCrawl() {
           closeCurrentStream();
         });
 
+        // Support alternate completion event name
+        es.addEventListener("crawlComplete", (ev: MessageEvent) => {
+          try {
+            const parsed = parseSseEvent<any>(ev);
+            if (parsed) {
+              console.log("Crawl completed (crawlComplete):", parsed);
+            }
+          } catch {}
+          setRunning(false);
+          closeCurrentStream();
+        });
+
         // Handle error events
         es.addEventListener("error", (ev: MessageEvent) => {
           try {
-            const e = JSON.parse(ev.data);
-            setError(e?.message ?? "Server reported an error.");
+            const parsed = parseSseEvent<{ code: string; message: string }>(ev);
+            setError(parsed?.data?.message ?? "Server reported an error.");
           } catch {
             setError("Server reported an error.");
           }
@@ -220,23 +346,27 @@ export function useCrawl() {
         // Default message handler if server doesn't name events
         es.addEventListener("message", (ev: MessageEvent) => {
           try {
-            const d = JSON.parse(ev.data);
-            const t = d?.type;
+            const parsed = parseSseEvent<any>(ev);
+            if (!parsed) return; 
+            const d = parsed; 
+            const t = d.type;
 
             if (t === "job" || t === "page" || t === "item") {
               const payload = {
-                id: d.key ?? d.data?.id ?? d.url ?? d.link ?? undefined,
-                title: d.data?.title ?? d.title,
-                company: d.data?.company ?? d.company,
-                location: d.data?.location ?? d.location,
-                url: d.data?.url ?? d.url ?? d.link,
+                id: (d as any).key ?? d.data?.job?.id ?? d.data?.id ?? (d as any).url ?? (d as any).link ?? undefined,
+                title: d.data?.job?.title ?? d.data?.title ?? (d as any).title,
+                company: d.data?.job?.company ?? d.data?.company ?? (d as any).company,
+                location: d.data?.job?.location ?? d.data?.location ?? (d as any).location,
+                url: d.data?.job?.url ?? d.data?.url ?? (d as any).url ?? (d as any).link,
                 createdAt: new Date().toISOString(),
-                tags: Array.isArray(d.data?.tags)
+                tags: Array.isArray(d.data?.job?.tags)
+                  ? d.data.job.tags
+                  : Array.isArray(d.data?.tags)
                   ? d.data.tags
-                  : Array.isArray(d.tags)
-                  ? d.tags
+                  : Array.isArray((d as any).tags)
+                  ? (d as any).tags
                   : [],
-                description: d.data?.description ?? d.description ?? "",
+                description: d.data?.job?.description ?? d.data?.description ?? (d as any).description ?? "",
               };
 
               if (payload.id && seenKeysRef.current.has(payload.id)) return;
@@ -247,14 +377,15 @@ export function useCrawl() {
               return;
             }
 
-            if (t === "complete" || t === "stopped" || t === "allComplete") {
+            if (t === "complete" || t === "stopped" || t === "allComplete" || t === "crawlComplete") {
               setRunning(false);
               closeCurrentStream();
               return;
             }
 
             if (t === "error") {
-              setError(d?.message ?? "Server reported an error.");
+              const msg = (d as any)?.data?.message ?? (d as any)?.message;
+              setError(msg ?? "Server reported an error.");
               setRunning(false);
               closeCurrentStream();
               return;

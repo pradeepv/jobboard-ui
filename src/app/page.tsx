@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useAnalysis } from "@/hooks/useAnalysis";
 import { useCrawl } from "@/hooks/useCrawl";
 import GroupedTimeline from "@/components/GroupedTimeline";
 import Modal from "@/components/Modal";
@@ -49,13 +50,14 @@ export default function Home() {
   }, [running, error, requestId]);
 
   // ——— Analysis state and handlers ———
+  const { analyzing, analysisError: hookAnalysisError, events: analysisEvents, jobDetails, aiResults, analysisCompleted, startAnalysis } = useAnalysis();
   const [analysisInfo, setAnalysisInfo] = useState<{ requestId: string; sseUrl: string } | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalJob, setModalJob] = useState<JobInfo | null>(null);
 
-  const esRef = useRef<EventSource | null>(null);
+  // No local EventSource: the hook manages SSE lifecycle to avoid duplicates
   const [connected, setConnected] = useState(false);
 
   // Visible analysis log
@@ -68,6 +70,7 @@ export default function Home() {
 
   // Job summary gathered from events
   const [jobSummary, setJobSummary] = useState<JobInfo | null>(null);
+  
 
   const pushLog = (entry: AnalysisLog) => {
     setAnalysisLogs((prev) => [...prev, entry].slice(-500));
@@ -88,6 +91,7 @@ export default function Home() {
       description: item?.description,
     });
     setJobSummary(null);
+    // aiResults comes from useAnalysis hook; no local reset needed
     setModalOpen(true);
 
     setAnalysisError(null);
@@ -99,28 +103,8 @@ export default function Home() {
     pushLog({ ts: Date.now(), level: "info", message: "Starting analysis…", data: { url } });
 
     try {
-      const res = await fetch("/api/analysis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobUrl: url }),
-      });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(`POST /api/analysis failed: ${res.status} ${t}`);
-      }
-      const data = await res.json();
-
-      const normalized = normalizeSseUrl(String(data.sseUrl));
-      setAnalysisInfo({ requestId: String(data.requestId), sseUrl: normalized.rel });
-
-      pushLog({
-        ts: Date.now(),
-        level: "info",
-        message: "Analysis started.",
-        data: { requestId: data.requestId, sseUrl: normalized.display },
-      });
-
-      setTimeout(() => connectSse(normalized), 0);
+      await startAnalysis(url);
+      pushLog({ ts: Date.now(), level: "info", message: "Analysis started (hook-managed SSE).", data: { url } });
     } catch (e: any) {
       const msg = e?.message || "Failed to start analysis";
       setAnalysisError(msg);
@@ -128,122 +112,35 @@ export default function Home() {
     }
   };
 
-  const connectSse = (u?: ReturnType<typeof normalizeSseUrl>) => {
-    const src = u ?? (analysisInfo ? normalizeSseUrl(analysisInfo.sseUrl) : null);
-    if (!src) return;
-
-    if (esRef.current) {
-      try {
-        esRef.current.close();
-      } catch {}
-      esRef.current = null;
-    }
-
-    pushLog({
-      ts: Date.now(),
-      level: "info",
-      message: "Connecting to analysis SSE…",
-      data: { url: src.display },
-    });
-
-    try {
-      const bust = src.connect + (src.connect.includes("?") ? "&" : "?") + "t=" + Date.now();
-      const es = new EventSource(bust);
-      esRef.current = es;
-
-      es.addEventListener("open", () => {
-        setConnected(true);
-        pushLog({ ts: Date.now(), level: "event", name: "open", message: "SSE open." });
-      });
-
-      es.addEventListener("connected", (e) => {
-        pushLog({
-          ts: Date.now(),
-          level: "event",
-          name: "connected",
-          message: "Server acknowledged connection.",
-          data: safeParse((e as MessageEvent).data),
-        });
-      });
-
-      es.addEventListener("analysis", (e) => {
-        const data = safeParse((e as MessageEvent).data);
-        const kind = data?.kind || data?.type || "(no kind)";
-        pushLog({
-          ts: Date.now(),
-          level: "event",
-          name: "analysis",
-          message: `Analysis event: ${kind}`,
-          data,
-        });
-
-        // Capture job details for the summary when available
-        // Adjust these keys to match your payloads
-        if (kind === "jobAnalyzed" || kind === "analysisComplete" || kind === "analysisAllComplete") {
-          const fromEvent: JobInfo = {
-            title: data?.job?.title ?? data?.title ?? modalJob?.title,
-            company: data?.job?.company ?? data?.company ?? modalJob?.company,
-            location: data?.job?.location ?? data?.location ?? modalJob?.location,
-            description: data?.job?.description ?? data?.description ?? modalJob?.description,
-            url: modalJob?.url,
-            id: modalJob?.id,
-          };
-          setJobSummary((prev) => ({ ...prev, ...fromEvent }));
-        }
-      });
-
-      es.addEventListener("done", (e) => {
-        pushLog({
-          ts: Date.now(),
-          level: "event",
-          name: "done",
-          message: "Analysis complete.",
-          data: safeParse((e as MessageEvent).data),
-        });
-        setConnected(false);
-        setAnalysisFinished(true);
-        // Auto-collapse the stream log when done
-        setStreamCollapsed(true);
-        try {
-          es.close();
-        } catch {}
-        esRef.current = null;
-      });
-
-      es.onerror = () => {
-        pushLog({
-          ts: Date.now(),
-          level: "error",
-          message:
-            "SSE error/closed (proxy may have dropped the stream). If in dev, we route directly to :8082.",
-          data: { readyState: es.readyState, url: src.display },
-        });
-        setConnected(false);
-        try {
-          es.close();
-        } catch {}
-        esRef.current = null;
-      };
-    } catch (err) {
-      pushLog({
-        ts: Date.now(),
-        level: "error",
-        message: "Failed to create EventSource.",
-        data: String(err),
-      });
-    }
-  };
-
+  // Bind analysis hook state into modal content
   useEffect(() => {
-    return () => {
-      if (esRef.current) {
-        try {
-          esRef.current.close();
-        } catch {}
-        esRef.current = null;
-      }
-    };
-  }, []);
+    // When parsed details arrive, populate the summary shown in the modal
+    if (jobDetails) {
+      setJobSummary({
+        title: jobDetails.title || modalJob?.title || 'Untitled job',
+        company: jobDetails.company || modalJob?.company || 'Unknown company',
+        location: jobDetails.location || modalJob?.location || '',
+        url: jobDetails.url || modalJob?.url || '',
+        description: jobDetails.description || '',
+      } as any);
+    } else if (modalJob) {
+      // Fallback so the modal doesn’t look empty before parsingComplete
+      setJobSummary({
+        title: modalJob.title || 'Untitled job',
+        company: modalJob.company || 'Unknown company',
+        location: modalJob.location || '',
+        url: modalJob.url || '',
+        description: modalJob.description || '',
+      } as any);
+    }
+  }, [jobDetails, modalJob]);
+
+  // When hook's analysisError changes, reflect it locally if needed
+  useEffect(() => {
+    if (hookAnalysisError) setAnalysisError(hookAnalysisError);
+  }, [hookAnalysisError]);
+
+  // Removed local analysis EventSource handling; hook manages SSE lifecycle
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -442,7 +339,7 @@ export default function Home() {
         }
       >
         <div className="space-y-5">
-          {/* Job Summary Panel */}
+          {/* Parsed Job Details */}
           <div className="rounded border border-slate-200 bg-white p-3">
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -466,83 +363,108 @@ export default function Home() {
               )}
             </div>
             <div className="mt-3 text-sm text-slate-800 whitespace-pre-wrap">
-              {jobSummary?.description ?? modalJob?.description ?? (
-                <span className="text-slate-500">No description captured yet.</span>
+              {jobDetails?.description ?? jobSummary?.description ?? modalJob?.description ?? (
+                <span className="text-slate-500">(waiting for parsingComplete…)</span>
               )}
             </div>
           </div>
 
-          {/* Analysis Stream (collapsible) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-slate-800">Analysis Stream</div>
-              <div className="flex items-center gap-2">
-                <span
-                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${
-                    connected ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"
-                  }`}
-                  title={connected ? "SSE open" : "Not connected"}
-                >
-                  {connected ? "Connected" : "Disconnected"}
-                </span>
-                <button
-                  className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
-                  onClick={() => setStreamCollapsed((v) => !v)}
-                >
-                  {streamCollapsed ? "Expand log" : "Collapse log"}
-                </button>
-              </div>
+          {/* AI Analysis Results */}
+          <div className="rounded border border-blue-200 bg-blue-50 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="h-2 w-2 rounded-full bg-blue-500"></div>
+              <div className="text-sm font-medium text-blue-900">AI Analysis Results</div>
             </div>
-
-            {!analysisInfo ? (
-              <span className="text-xs text-slate-500">Waiting to start analysis…</span>
-            ) : streamCollapsed ? (
-              <div className="rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">
-                {analysisFinished ? "Analysis complete. Log collapsed." : "Log collapsed."}
-              </div>
+            {!aiResults ? (
+              <div className="text-sm text-blue-700">Awaiting AI analysis…</div>
             ) : (
-              <div className="h-48 overflow-auto rounded border border-slate-200 bg-slate-50 p-2 text-xs text-slate-800">
-                {analysisLogs.length === 0 ? (
-                  <p className="text-slate-500">No messages yet.</p>
-                ) : (
-                  <ul className="space-y-1">
-                    {analysisLogs.map((l, i) => (
-                      <li key={i} className="whitespace-pre-wrap break-words">
-                        <span className="text-slate-400 tabular-nums mr-2">
-                          {new Date(l.ts).toLocaleTimeString()}
+              <div className="space-y-3 text-sm">
+                {aiResults.companyInfo && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Company Info</div>
+                    <div className="text-blue-700">{aiResults.companyInfo}</div>
+                  </div>
+                )}
+                {aiResults.salaryRange && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Salary Range</div>
+                    <div className="text-blue-700">{aiResults.salaryRange}</div>
+                  </div>
+                )}
+                {aiResults.roleDescription && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Role Description</div>
+                    <div className="text-blue-700">{aiResults.roleDescription}</div>
+                  </div>
+                )}
+                {aiResults.experienceLevel && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Experience Level</div>
+                    <div className="text-blue-700">{aiResults.experienceLevel}</div>
+                  </div>
+                )}
+                {aiResults.roleDuties && aiResults.roleDuties.length > 0 && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Role Duties</div>
+                    <ul className="text-blue-700 list-disc list-inside space-y-1">
+                      {aiResults.roleDuties.map((duty, index) => (
+                        <li key={index}>{duty}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {aiResults.requirements && aiResults.requirements.length > 0 && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Requirements</div>
+                    <ul className="text-blue-700 list-disc list-inside space-y-1">
+                      {aiResults.requirements.map((req, index) => (
+                        <li key={index}>{req}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {aiResults.techStack && aiResults.techStack.length > 0 && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Tech Stack</div>
+                    <div className="flex flex-wrap gap-1">
+                      {aiResults.techStack.map((tech, index) => (
+                        <span key={index} className="inline-flex items-center rounded-full bg-blue-100 px-2 py-1 text-xs text-blue-800">
+                          {tech}
                         </span>
-                        <span
-                          className={
-                            l.level === "error"
-                              ? "text-rose-700"
-                              : l.level === "event"
-                              ? "text-emerald-700"
-                              : "text-slate-700"
-                          }
-                        >
-                          {l.name ? `[${l.name}] ` : ""}
-                          {l.message}
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {aiResults.softSkills && aiResults.softSkills.length > 0 && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Soft Skills</div>
+                    <div className="flex flex-wrap gap-1">
+                      {aiResults.softSkills.map((skill, index) => (
+                        <span key={index} className="inline-flex items-center rounded-full bg-green-100 px-2 py-1 text-xs text-green-800">
+                          {skill}
                         </span>
-                        {l.data ? (
-                          <details className="mt-1 text-slate-600">
-                            <summary className="cursor-pointer text-[11px]">details</summary>
-                            <pre className="overflow-auto rounded bg-white p-2 text-[11px] text-slate-800">
-                              {safeStringify(l.data)}
-                            </pre>
-                          </details>
-                        ) : null}
-                      </li>
-                    ))}
-                    <div ref={logEndRef} />
-                  </ul>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {aiResults.leadershipRole !== undefined && (
+                  <div>
+                    <div className="font-medium text-blue-800 mb-1">Leadership Role</div>
+                    <div className="text-blue-700">
+                      {aiResults.leadershipRole ? "Yes" : "No"}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
-
-            {analysisError && (
-              <div className="rounded border border-rose-300 bg-rose-50 p-2 text-rose-700 text-xs">{analysisError}</div>
-            )}
           </div>
+
+          {/* Analysis Stream (hidden for now) */}
+          {/*
+          <div className="space-y-2">
+            ...stream log UI hidden...
+          </div>
+          */}
         </div>
       </Modal>
     </main>

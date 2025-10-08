@@ -62,9 +62,20 @@ export default function GroupedTimeline({
                     <button
                       className="text-sm rounded border px-2 py-1 hover:bg-blue-50 text-blue-700"
                       onClick={() => {
-                        console.log("[GroupedTimeline] View clicked:", e.url, e.id);
+                        console.log(
+                          "[GroupedTimeline] View clicked - Full event data:",
+                          e,
+                        );
+                        console.log(
+                          "[GroupedTimeline] URL being opened:",
+                          e.url,
+                        );
                         try {
-                          window.open(e.url as string, "_blank", "noopener,noreferrer");
+                          window.open(
+                            e.url as string,
+                            "_blank",
+                            "noopener,noreferrer",
+                          );
                         } catch {
                           // As a fallback, set location (less safe; avoid if possible)
                           window.location.href = e.url as string;
@@ -81,7 +92,14 @@ export default function GroupedTimeline({
                     <button
                       className="text-sm rounded border px-2 py-1 hover:bg-blue-50"
                       onClick={() => {
-                        console.log("[GroupedTimeline] Analyze clicked:", e.url, e.id);
+                        console.log(
+                          "[GroupedTimeline] Analyze clicked - Full event data:",
+                          e,
+                        );
+                        console.log(
+                          "[GroupedTimeline] URL being passed to onAnalyze:",
+                          e.url,
+                        );
                         onAnalyze?.(e.url as string, e);
                       }}
                     >
@@ -89,12 +107,16 @@ export default function GroupedTimeline({
                     </button>
                   ) : (
                     <span className="text-xs text-gray-400">
-                      {onAnalyze ? "(no URL to analyze)" : "(no onAnalyze handler)"}
+                      {onAnalyze
+                        ? "(no URL to analyze)"
+                        : "(no onAnalyze handler)"}
                     </span>
                   )}
                 </div>
 
-                {e.description && <p className="mt-2 text-sm">{e.description}</p>}
+                {e.description && (
+                  <p className="mt-2 text-sm">{e.description}</p>
+                )}
               </div>
             </li>
           );
